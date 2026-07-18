@@ -50,6 +50,31 @@ def trim_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> lis
     return history[-(max_turns * 2):]
 
 
+def _spin(stop: threading.Event) -> None:
+    """Animate a thinking indicator until stop is set, then clear the line."""
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    i = 0
+    while not stop.is_set():
+        print(f"\r🤖 {frames[i % len(frames)]} thinking…", end="", flush=True)
+        i += 1
+        stop.wait(0.1)
+    print("\r\033[K", end="", flush=True)
+
+
+def _start_spinner() -> tuple[threading.Event, threading.Thread]:
+    """Start the thinking spinner in a background thread."""
+    stop = threading.Event()
+    thread = threading.Thread(target=_spin, args=(stop,), daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def _stop_spinner(stop: threading.Event, thread: threading.Thread) -> None:
+    """Stop the spinner and wait for it to clear its line. Safe to call twice."""
+    stop.set()
+    thread.join()
+
+
 def _is_retryable(exc: Exception) -> bool:
     """Return True for transient errors worth retrying (429, 5xx, network)."""
     if isinstance(exc, genai_errors.ClientError):
@@ -73,6 +98,7 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> str | None:
     """
     for attempt in range(1, MAX_RETRIES + 1):
         chunks: list[str] = []
+        stop, spinner = _start_spinner()
         try:
             stream = client.models.generate_content_stream(
                 model=MODEL_NAME,
@@ -82,15 +108,20 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> str | None:
             for chunk in stream:
                 if chunk.text:
                     if not chunks:
+                        _stop_spinner(stop, spinner)
                         print("🤖 ", end="", flush=True)
                     print(chunk.text, end="", flush=True)
                     chunks.append(chunk.text)
-            if not chunks:
+            _stop_spinner(stop, spinner)
+            if chunks:
+                print()
+            text = "".join(chunks).strip()
+            if not text:
                 logger.error("Empty response from Gemini.")
                 return None
-            print()
-            return "".join(chunks).strip()
+            return text
         except (genai_errors.APIError, httpx.RequestError) as exc:
+            _stop_spinner(stop, spinner)
             if chunks:
                 print()
                 logger.error("Connection lost mid-response: %s", exc)
@@ -101,6 +132,8 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> str | None:
             delay = RETRY_BASE_DELAY * 2 ** (attempt - 1)
             logger.warning("Transient error (%s), retrying in %.0fs…", exc, delay)
             time.sleep(delay)
+        finally:
+            _stop_spinner(stop, spinner)
     return None
 
 
