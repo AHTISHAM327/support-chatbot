@@ -25,6 +25,19 @@ def make_client(*stream_results):
     return client
 
 
+def drain(stream):
+    """Consume a stream_reply generator and return its final value.
+
+    stream_reply yields text chunks and returns the full joined text (or
+    None) via StopIteration, so tests capture that return value here.
+    """
+    try:
+        while True:
+            next(stream)
+    except StopIteration as done:
+        return done.value
+
+
 def test_build_messages_appends_user_turn():
     history = [{"role": "user", "parts": [{"text": "hi"}]}]
     result = main.build_messages(history, "hello")
@@ -52,17 +65,17 @@ def test_trim_history_short_history_unchanged():
 
 def test_stream_reply_returns_joined_text():
     client = make_client(["Hello", " there", "."])
-    assert main.stream_reply(client, []) == "Hello there."
+    assert drain(main.stream_reply(client, [])) == "Hello there."
 
 
 def test_stream_reply_empty_response_returns_none():
     client = make_client([])
-    assert main.stream_reply(client, []) is None
+    assert drain(main.stream_reply(client, [])) is None
 
 
 def test_stream_reply_whitespace_only_response_returns_none():
     client = make_client([" ", "\n"])
-    assert main.stream_reply(client, []) is None
+    assert drain(main.stream_reply(client, [])) is None
 
 
 def test_stream_reply_retries_rate_limit_then_succeeds(monkeypatch):
@@ -71,7 +84,7 @@ def test_stream_reply_retries_rate_limit_then_succeeds(monkeypatch):
         429, {"error": {"message": "rate limited", "code": 429}}
     )
     client = make_client(rate_limit, ["ok"])
-    assert main.stream_reply(client, []) == "ok"
+    assert drain(main.stream_reply(client, [])) == "ok"
     assert client.models.generate_content_stream.call_count == 2
 
 
@@ -80,13 +93,14 @@ def test_stream_reply_non_retryable_client_error_returns_none():
         400, {"error": {"message": "bad request", "code": 400}}
     )
     client = make_client(bad_request)
-    assert main.stream_reply(client, []) is None
+    assert drain(main.stream_reply(client, [])) is None
     assert client.models.generate_content_stream.call_count == 1
 
 
 def test_stream_reply_gives_up_after_max_retries(monkeypatch):
     monkeypatch.setattr(main.time, "sleep", lambda _: None)
-    errors = [httpx.ConnectError("down") for _ in range(main.MAX_RETRIES)]
+    total_calls = main.MAX_RETRIES * len(main.MODEL_NAMES)
+    errors = [httpx.ConnectError("down") for _ in range(total_calls)]
     client = make_client(*errors)
-    assert main.stream_reply(client, []) is None
-    assert client.models.generate_content_stream.call_count == main.MAX_RETRIES
+    assert drain(main.stream_reply(client, [])) is None
+    assert client.models.generate_content_stream.call_count == total_calls

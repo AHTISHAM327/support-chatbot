@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Generator
 
 import httpx
 from dotenv import load_dotenv
@@ -13,7 +14,9 @@ from prompts import SYSTEM_PROMPT
 
 load_dotenv()
 
-MODEL_NAME = "gemini-flash-latest"
+# Tried in order: if a model is unavailable, rate-limited, or the server
+# is busy, the next one is tried before backing off and retrying.
+MODEL_NAMES = ["gemini-flash-latest", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 MAX_HISTORY_TURNS = 10
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0
@@ -76,64 +79,74 @@ def _stop_spinner(stop: threading.Event, thread: threading.Thread) -> None:
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Return True for transient errors worth retrying (429, 5xx, network)."""
+    """Return True for errors worth a model fallback or retry
+    (model unavailable, 429, 5xx, network)."""
     if isinstance(exc, genai_errors.ClientError):
-        return exc.code == 429
+        return exc.code in (404, 429)
     return isinstance(exc, (genai_errors.ServerError, httpx.RequestError))
 
 
-def stream_reply(client: genai.Client, messages: list[dict]) -> str | None:
-    """Stream a Gemini reply to stdout and return the full text.
+def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, None, str | None]:
+    """Yield a Gemini reply chunk by chunk and return the full text.
 
-    Retries transient failures (rate limit, server, network) with
-    exponential backoff. A failure after output has started is not
-    retried, to avoid printing the reply twice.
+    Tries each model in MODEL_NAMES in order, falling back to the next
+    when one is unavailable, rate-limited, or the server is busy. If
+    every model fails, retries the whole list with exponential backoff.
+    A failure after output has started is not retried, to avoid
+    yielding the reply twice.
 
     Args:
         client: Configured Gemini client.
         messages: Full conversation history including the current turn.
 
+    Yields:
+        Each text chunk as it arrives from the model.
+
     Returns:
         The complete response text, or None if the request failed.
     """
     for attempt in range(1, MAX_RETRIES + 1):
-        chunks: list[str] = []
-        stop, spinner = _start_spinner()
-        try:
-            stream = client.models.generate_content_stream(
-                model=MODEL_NAME,
-                contents=messages,
-                config={"system_instruction": SYSTEM_PROMPT},
-            )
-            for chunk in stream:
-                if chunk.text:
-                    if not chunks:
-                        _stop_spinner(stop, spinner)
-                        print("🤖 ", end="", flush=True)
-                    print(chunk.text, end="", flush=True)
-                    chunks.append(chunk.text)
-            _stop_spinner(stop, spinner)
-            if chunks:
-                print()
-            text = "".join(chunks).strip()
-            if not text:
-                logger.error("Empty response from Gemini.")
-                return None
-            return text
-        except (genai_errors.APIError, httpx.RequestError) as exc:
-            _stop_spinner(stop, spinner)
-            if chunks:
-                print()
-                logger.error("Connection lost mid-response: %s", exc)
-                return None
-            if not _is_retryable(exc) or attempt == MAX_RETRIES:
-                logger.error("Gemini request failed: %s", exc)
-                return None
-            delay = RETRY_BASE_DELAY * 2 ** (attempt - 1)
-            logger.warning("Transient error (%s), retrying in %.0fs…", exc, delay)
-            time.sleep(delay)
-        finally:
-            _stop_spinner(stop, spinner)
+        for model_name in MODEL_NAMES:
+            chunks: list[str] = []
+            stop, spinner = _start_spinner()
+            try:
+                stream = client.models.generate_content_stream(
+                    model=model_name,
+                    contents=messages,
+                    config={"system_instruction": SYSTEM_PROMPT},
+                )
+                for chunk in stream:
+                    if chunk.text:
+                        if not chunks:
+                            _stop_spinner(stop, spinner)
+                        chunks.append(chunk.text)
+                        yield chunk.text
+                _stop_spinner(stop, spinner)
+                if chunks:
+                    print()
+                text = "".join(chunks).strip()
+                if not text:
+                    logger.error("Empty response from Gemini.")
+                    return None
+                return text
+            except (genai_errors.APIError, httpx.RequestError) as exc:
+                _stop_spinner(stop, spinner)
+                if chunks:
+                    print()
+                    logger.error("Connection lost mid-response: %s", exc)
+                    return None
+                if not _is_retryable(exc):
+                    logger.error("Gemini request failed: %s", exc)
+                    return None
+                logger.warning("%s failed (%s), trying next model…", model_name, exc)
+            finally:
+                _stop_spinner(stop, spinner)
+        if attempt == MAX_RETRIES:
+            break
+        delay = RETRY_BASE_DELAY * 2 ** (attempt - 1)
+        logger.warning("All models failed, retrying in %.0fs…", delay)
+        time.sleep(delay)
+    logger.error("Gemini request failed after trying all models.")
     return None
 
 
@@ -155,7 +168,19 @@ def run_chat(client: genai.Client) -> None:
             print("👋 Goodbye! Have a great day.")
             return
         messages = build_messages(history, user_input)
-        response = stream_reply(client, messages)
+        first = True
+        response: str | None = None
+        stream = stream_reply(client, messages)
+        while True:
+            try:
+                chunk = next(stream)
+            except StopIteration as done:
+                response = done.value
+                break
+            if first:
+                print("🤖 ", end="", flush=True)
+                first = False
+            print(chunk, end="", flush=True)
         if response is None:
             print("❌ Could not get a response. Try again.")
             continue

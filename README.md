@@ -18,7 +18,8 @@ Simulates a real customer support conversation in your terminal. The bot remembe
 | Conversation memory | Remembers full conversation history across all turns |
 | Streaming replies | Responses print word-by-word as Gemini generates them — no long silent waits |
 | Thinking indicator | Animated `🤖 ⠋ thinking…` spinner while waiting for the first token, so the app never looks frozen |
-| Auto-retry with backoff | Rate limits (429), server errors (5xx), and network drops are retried up to 3 times with exponential delays (2s → 4s) before giving up |
+| Model fallback | Three Gemini models tried in order (`gemini-flash-latest` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`) — an unavailable or overloaded model never fails the turn |
+| Auto-retry with backoff | After the whole model list fails, the full list is retried up to 3 times with exponential delays (2s → 4s) before giving up |
 | System prompt | Configurable persona in `prompts.py` — change one file to rebrand |
 | Context trimming | Keeps last 10 turns to prevent API errors from long histories |
 | Graceful exits | Type `exit`, `quit`, or `bye` — or press `Ctrl+C` / `Ctrl+D` — and the session ends cleanly, never with a traceback |
@@ -86,8 +87,8 @@ All failures are handled without crashing the chat loop:
 | Failure | Behavior |
 |---------|----------|
 | `GEMINI_API_KEY` missing | Clear startup error, exits with code 1 |
-| Rate limit (HTTP 429) | Retried up to 3× with exponential backoff, then a friendly message |
-| Server error (5xx) | Same retry-with-backoff treatment |
+| Model unavailable (404) or rate limit (429) | Falls back to the next model in the list; once all models fail, the list is retried up to 3× with exponential backoff, then a friendly message |
+| Server error (5xx) | Same fallback-then-retry treatment |
 | Network drop before reply | Retried; if it keeps failing, "Could not get a response. Try again." |
 | Network drop mid-reply | Not retried (avoids printing the reply twice) — reported, loop continues |
 | Empty / whitespace-only response | Reported as an error, nothing saved to history |
@@ -118,7 +119,7 @@ support-chatbot/
 
 ## Tech Stack
 
-- **LLM:** Google Gemini (`gemini-flash-latest`) via `google-genai` SDK
+- **LLM:** Google Gemini via `google-genai` SDK, with automatic fallback (`gemini-flash-latest` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`)
 - **Memory:** Python list passed as Gemini's `contents` parameter on every call
 - **System prompt:** Passed via `config={"system_instruction": ...}` — constant across all turns
 - **Streaming:** `generate_content_stream` with chunk-by-chunk printing; spinner runs in a background thread until the first token lands
