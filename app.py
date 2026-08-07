@@ -160,6 +160,20 @@ html, body, [class*="css"] {
     max-width: min(76%, 33rem) !important;
     flex: 0 1 auto !important;
 }
+/* Belt-and-suspenders: the bubble's own width is fit-content, sized off
+   this inner wrapper's preferred (unwrapped) width. If that calculation
+   is ever off by even a browser rounding/timing quirk, text with no cap
+   of its own can draw past the bubble's background. Capping the wrapper
+   and markdown container at 100% of the bubble means the bubble itself
+   is always the single source of truth for how wide text is allowed to
+   render, no matter how the outer fit-content sizing behaves. */
+[class*="st-key-bub_u"] [data-testid="stLayoutWrapper"],
+[class*="st-key-bub_b"] [data-testid="stLayoutWrapper"],
+[class*="st-key-bub_u"] [data-testid="stMarkdownContainer"],
+[class*="st-key-bub_b"] [data-testid="stMarkdownContainer"] {
+    max-width: 100% !important;
+    width: 100% !important;
+}
 [class*="st-key-bub_u"] p,
 [class*="st-key-bub_b"] p { margin: 0 0 0.45em 0; }
 [class*="st-key-bub_u"] p:last-child,
