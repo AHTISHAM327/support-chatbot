@@ -86,7 +86,12 @@ def _is_retryable(exc: Exception) -> bool:
     return isinstance(exc, (genai_errors.ServerError, httpx.RequestError))
 
 
-def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, None, str | None]:
+def stream_reply(
+    client: genai.Client,
+    messages: list[dict],
+    *,
+    _use_spinner: bool = False,
+) -> Generator[str, None, str | None]:
     """Yield a Gemini reply chunk by chunk and return the full text.
 
     Tries each model in MODEL_NAMES in order, falling back to the next
@@ -98,6 +103,10 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, N
     Args:
         client: Configured Gemini client.
         messages: Full conversation history including the current turn.
+        _use_spinner: Internal flag — True only from run_chat() (CLI path).
+            The terminal spinner must NOT run from the Streamlit path because
+            Thread.start() + Thread.join() add blocking overhead on every model
+            attempt with no visible effect in the browser.
 
     Yields:
         Each text chunk as it arrives from the model.
@@ -108,7 +117,9 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, N
     for attempt in range(1, MAX_RETRIES + 1):
         for model_name in MODEL_NAMES:
             chunks: list[str] = []
-            stop, spinner = _start_spinner()
+            stop = spinner = None
+            if _use_spinner:
+                stop, spinner = _start_spinner()
             try:
                 stream = client.models.generate_content_stream(
                     model=model_name,
@@ -117,12 +128,15 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, N
                 )
                 for chunk in stream:
                     if chunk.text:
-                        if not chunks:
+                        if not chunks and _use_spinner and stop and spinner:
                             _stop_spinner(stop, spinner)
+                            stop = spinner = None
                         chunks.append(chunk.text)
                         yield chunk.text
-                _stop_spinner(stop, spinner)
-                if chunks:
+                if _use_spinner and stop and spinner:
+                    _stop_spinner(stop, spinner)
+                    stop = spinner = None
+                if chunks and _use_spinner:
                     print()
                 text = "".join(chunks).strip()
                 if not text:
@@ -130,9 +144,12 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, N
                     return None
                 return text
             except (genai_errors.APIError, httpx.RequestError) as exc:
-                _stop_spinner(stop, spinner)
+                if _use_spinner and stop and spinner:
+                    _stop_spinner(stop, spinner)
+                    stop = spinner = None
                 if chunks:
-                    print()
+                    if _use_spinner:
+                        print()
                     logger.error("Connection lost mid-response: %s", exc)
                     return None
                 if not _is_retryable(exc):
@@ -140,7 +157,9 @@ def stream_reply(client: genai.Client, messages: list[dict]) -> Generator[str, N
                     return None
                 logger.warning("%s failed (%s), trying next model…", model_name, exc)
             finally:
-                _stop_spinner(stop, spinner)
+                # Guarantee spinner is cleaned up even on unexpected exceptions.
+                if _use_spinner and stop and spinner:
+                    _stop_spinner(stop, spinner)
         if attempt == MAX_RETRIES:
             break
         delay = RETRY_BASE_DELAY * 2 ** (attempt - 1)
@@ -170,7 +189,7 @@ def run_chat(client: genai.Client) -> None:
         messages = build_messages(history, user_input)
         first = True
         response: str | None = None
-        stream = stream_reply(client, messages)
+        stream = stream_reply(client, messages, _use_spinner=True)
         while True:
             try:
                 chunk = next(stream)

@@ -1,0 +1,30 @@
+[theme]
+# Warm orange accent on a near-black navy base, matching the custom chat
+# bubbles/cards in app.py (CSS there handles gradients/animation that
+# config.toml can't express; this handles native widgets — buttons, metrics,
+# borders — so they pick up the same palette automatically).
+base = "dark"
+primaryColor = "#f97316"
+backgroundColor = "#0a0e14"
+secondaryBackgroundColor = "#12121f"
+textColor = "#e5e7eb"
+borderColor = "#1f2430"
+baseRadius = "10px"
+buttonRadius = "10px"
+showWidgetBorder = true
+showSidebarBorder = true
+font = "sans serif"
+
+[theme.sidebar]
+backgroundColor = "#05070a"
+secondaryBackgroundColor = "#12121f"
+textColor = "#e5e7eb"
+borderColor = "#1f2430"
+primaryColor = "#f97316"
+
+[client]
+toolbarMode = "minimal"
+
+# No [server] section on purpose. Streamlit Cloud assigns and proxies its own
+# port; a hardcoded port / headless setting here breaks the deployed app
+# (this bit document-intelligence). The local defaults are already correct.
