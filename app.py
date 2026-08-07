@@ -5,9 +5,17 @@ terminal app uses. It imports build_messages(), trim_history(), and the
 stream_reply() generator from main.py and wraps them for the browser —
 none of that logic is reimplemented here.
 
+Messages render via st.chat_message(), Streamlit's native chat component,
+rather than hand-built flexbox containers. That native component sizes
+its own box correctly by construction (no fit-content/shrink-to-fit CSS
+required), which is what a hand-rolled version kept getting wrong at the
+edges — this rewrite trades a from-scratch layout for a boring, tested
+one instead of patching the symptom again.
+
 Run with:  streamlit run app.py
 """
 
+import base64
 import os
 
 import streamlit as st
@@ -32,20 +40,46 @@ if not os.environ.get("GEMINI_API_KEY"):
         st.stop()
 
 ASSISTANT_NAME = "Aira"
+COMPANY_NAME = "Nexus Analytics"
 
 EXAMPLE_QUESTIONS = [
-    ("", "Reset account credentials"),
-    ("", "Billing & invoice inquiry"),
-    ("", "Dashboard configuration"),
-    ("", "Report a platform issue"),
+    "Reset account credentials",
+    "Billing & invoice inquiry",
+    "Dashboard configuration",
+    "Report a platform issue",
 ]
 
-# Colors/gradients/animation live here because config.toml's [theme] can't
-# express them (per-role bubble backgrounds, keyframes).
-# Selectors use [class*="st-key-<prefix>"] because each st.container(key=...)
-# gets its own unique "st-key-<key>" class — the substring match lets one
-# rule style every bubble sharing a prefix (e.g. bub_b0, bub_b1, bub_b_live)
-# without listing every message index individually.
+
+def _monogram_avatar(letter: str, bg: str) -> str:
+    """Builds a small branded letter-badge avatar as an inline SVG data URI.
+
+    Used instead of an emoji (renders inconsistently across OSes) or a
+    stock "robot" icon (reads as a generic AI-chatbot cliché rather than
+    a support agent).
+    """
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
+        f'<rect width="64" height="64" rx="16" fill="{bg}"/>'
+        f'<text x="32" y="33" font-family="Arial, sans-serif" font-size="26" '
+        f'font-weight="700" fill="#ffffff" text-anchor="middle" '
+        f'dominant-baseline="middle">{letter}</text></svg>'
+    )
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+ASSISTANT_AVATAR = _monogram_avatar("A", "#f97316")
+USER_AVATAR = _monogram_avatar("U", "#334155")
+
+# Colors/fonts live here because config.toml's [theme] can't express
+# per-role message styling or the hero/card layout.
+#
+# Chat messages are styled via [data-testid="stChatMessage"]:has(...) on
+# the aria-label Streamlit puts on stChatMessageContent ("Chat message
+# from user"/"from assistant") — a stable, semantic selector, rather than
+# targeting emotion-generated classes that change across Streamlit
+# versions. Streamlit's own component owns sizing/wrapping for the
+# message box, so none of the width/fit-content overrides a hand-rolled
+# bubble needs are necessary here.
 #
 # Passed to st.html() through _iter_css_chunks() rather than in one call —
 # empirically, st.html() silently drops an entire <style> tag past a certain
@@ -64,29 +98,29 @@ html, body, [class*="css"] {
 /* ── Hero section ──────────────────────────────── */
 .hero-wrap {
     text-align: center;
-    padding: 3rem 1rem 1.75rem;
-    margin-bottom: 1.5rem;
+    padding: 2.75rem 1rem 1.5rem;
+    margin-bottom: 1.25rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 .hero-wordmark {
     display: inline-block;
     font-size: 0.72rem;
     font-weight: 700;
-    letter-spacing: 0.13em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #f97316;
     margin-bottom: 0.6rem;
 }
 .hero-title {
-    font-size: 2rem;
+    font-size: 1.85rem;
     font-weight: 700;
-    margin: 0 0 0.75rem;
+    margin: 0 0 0.65rem;
     color: #f4f5f7;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
 }
 .hero-subtitle {
-    font-size: 0.97rem;
-    line-height: 1.65;
+    font-size: 0.95rem;
+    line-height: 1.6;
     color: rgba(229, 231, 235, 0.65);
     max-width: 32rem;
     margin: 0 auto;
@@ -95,7 +129,7 @@ html, body, [class*="css"] {
 .suggest-section-label {
     font-size: 0.72rem;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #64748b;
     margin: 0.25rem 0 0.6rem;
@@ -107,7 +141,7 @@ html, body, [class*="css"] {
     padding: 0.7rem 1rem;
     height: 3rem;
     text-align: left;
-    font-size: 0.88rem;
+    font-size: 0.87rem;
     font-weight: 500;
     color: #d1d5db;
     white-space: nowrap;
@@ -120,152 +154,47 @@ html, body, [class*="css"] {
     background-color: rgba(249, 115, 22, 0.06);
     color: #f4f5f7;
 }
-/* ── Chat bubbles ──────────────────────────────── */
-/* width/height/flex-shrink overrides fix a flex-shrink bug where Streamlit's
-   horizontal containers collapse text below its natural width. */
-[class*="st-key-bub_u"] {
-    background-color: #ea580c;
-    color: #ffffff;
-    border-radius: 16px 16px 4px 16px;
-    padding: 0.65rem 1.1rem;
-    max-width: min(76%, 33rem);
-    width: fit-content !important;
-    min-width: 0 !important;
-    height: fit-content !important;
-    min-height: fit-content !important;
-    flex-shrink: 0 !important;
-    line-height: 1.55;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+/* ── Chat messages ─────────────────────────────── */
+[data-testid="stChatMessage"] {
+    background-color: transparent;
+    border-radius: 12px;
+    padding: 0.15rem 0;
+    margin-bottom: 0.4rem;
+    gap: 0.75rem;
 }
-[class*="st-key-bub_b"] {
-    background-color: #1c2942;
+[data-testid="stChatMessage"]:has([aria-label="Chat message from assistant"]) [data-testid="stChatMessageContent"] {
+    background-color: #161b2c;
+    border: 1px solid #232a42;
+    border-left: 3px solid #f97316;
+    border-radius: 4px 12px 12px 12px;
+    padding: 0.75rem 1.1rem;
+}
+[data-testid="stChatMessage"]:has([aria-label="Chat message from user"]) [data-testid="stChatMessageContent"] {
+    background-color: #0f1420;
+    border: 1px solid #1e2536;
+    border-radius: 4px 12px 12px 12px;
+    padding: 0.75rem 1.1rem;
+}
+[data-testid="stChatMessageContent"] p {
     color: #e2e5ec;
-    border-radius: 16px 16px 16px 4px;
-    padding: 0.65rem 1.1rem 0.9rem;
-    max-width: min(76%, 33rem);
-    width: fit-content !important;
-    min-width: 0 !important;
-    height: fit-content !important;
-    min-height: fit-content !important;
-    flex-shrink: 0 !important;
-    line-height: 1.55;
-    border: 1px solid #2c3b5a;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-    word-break: break-word;
-    overflow-wrap: anywhere;
+    line-height: 1.6;
+    margin: 0 0 0.5em 0;
+    font-size: 0.93rem;
 }
-[class*="st-key-row_u"] [data-testid="stLayoutWrapper"] {
-    width: fit-content !important;
-    max-width: min(76%, 33rem) !important;
-    flex: 0 1 auto !important;
-}
-/* Belt-and-suspenders: the bubble's own width is fit-content, sized off
-   this inner wrapper's preferred (unwrapped) width. If that calculation
-   is ever off by even a browser rounding/timing quirk, text with no cap
-   of its own can draw past the bubble's background. Capping the wrapper
-   and markdown container at 100% of the bubble means the bubble itself
-   is always the single source of truth for how wide text is allowed to
-   render, no matter how the outer fit-content sizing behaves. */
-[class*="st-key-bub_u"] [data-testid="stLayoutWrapper"],
-[class*="st-key-bub_b"] [data-testid="stLayoutWrapper"],
-[class*="st-key-bub_u"] [data-testid="stMarkdownContainer"],
-[class*="st-key-bub_b"] [data-testid="stMarkdownContainer"] {
-    max-width: 100% !important;
-    width: 100% !important;
-}
-[class*="st-key-bub_u"] p,
-[class*="st-key-bub_b"] p { margin: 0 0 0.45em 0; }
-[class*="st-key-bub_u"] p:last-child,
-[class*="st-key-bub_b"] p:last-child { margin-bottom: 0; }
-/* ── Bot avatar ────────────────────────────────── */
-/* Rendered via st.markdown(":material/...") inside a keyed container rather
-   than raw SVG markup through st.html() — st.html()'s sanitizer strips any
-   tag content containing the literal substring "svg" (a guard against a
-   known SVG-based mutation-XSS technique), which is why an inline icon
-   rendered as an empty box. Material Symbols go through the normal
-   markdown path instead, so nothing gets stripped. */
-/* !important throughout: Streamlit's own emotion-generated CSS for these
-   elements is injected later in the document than our <style> block and
-   ties on specificity, so it wins the cascade unless forced — confirmed by
-   inspecting computed styles in a real browser (background/border-radius/
-   icon color were all silently no-ops without it). */
-[class*="st-key-row_b"] {
-    align-items: flex-start !important;
-    flex-wrap: nowrap !important;
-}
-/* The avatar+bubble wrapping divs (Streamlit's own stLayoutWrapper, one
-   level above the st-key-tagged element) report full row width for
-   wrapping purposes even though their content hugs the bubble/icon — that
-   mismatch is what pushed the avatar onto its own line above the bubble
-   instead of beside it. Constraining the wrapper itself (not just the
-   st-key element inside it) is what actually fixes it.
-   max-width has to be repeated here too, not just on the bubble inside:
-   shrink-to-fit sizing on this wrapper is computed from its content's
-   unwrapped (single-line) preferred width, which ignores the bubble's own
-   max-width deeper in the tree — for any reply long enough to wrap to a
-   second line, that preferred width exceeds the row and shrink-to-fit
-   falls back to the full row width instead of the bubble's max-width. */
-[class*="st-key-row_b"] [data-testid="stLayoutWrapper"] {
-    width: fit-content !important;
-    max-width: min(76%, 33rem) !important;
-    flex: 0 1 auto !important;
-}
-[class*="st-key-avatar_b"] {
-    width: 28px !important;
-    height: 28px !important;
-    min-width: 28px !important;
-    border-radius: 6px !important;
-    background: #0f172a !important;
-    border: 1px solid #1e293b !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    margin-top: 0.65rem;
-    flex-shrink: 0 !important;
-}
-[class*="st-key-avatar_b"] [data-testid="stMarkdownContainer"] {
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-[class*="st-key-avatar_b"] span[role="img"] {
-    color: #f97316 !important;
-    font-size: 16px !important;
+[data-testid="stChatMessageContent"] p:last-child { margin-bottom: 0; }
+[data-testid="stChatMessage"] img {
+    border-radius: 10px;
 }
 /* ── Thinking indicator ────────────────────────── */
 .thinking-label {
     color: rgba(214, 217, 224, 0.6);
     font-style: italic;
     font-size: 0.9rem;
-    margin-right: 0.5rem;
+    animation: thinking-pulse 1.4s ease-in-out infinite;
 }
-.dot-flashing {
-    position: relative;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background-color: #f97316;
-    display: inline-block;
-    vertical-align: middle;
-    animation: dot-flashing 1s infinite linear alternate;
-    animation-delay: 0.5s;
-}
-.dot-flashing::before, .dot-flashing::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background-color: #f97316;
-    animation: dot-flashing 1s infinite alternate;
-}
-.dot-flashing::before { left: -9px; animation-delay: 0s; }
-.dot-flashing::after  { left:  9px; animation-delay: 1s; }
-@keyframes dot-flashing {
-    0%         { background-color: #f97316; }
-    50%, 100%  { background-color: rgba(249, 115, 22, 0.2); }
+@keyframes thinking-pulse {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 1; }
 }
 /* ── Sidebar ───────────────────────────────────── */
 [data-testid="stSidebar"] {
@@ -278,17 +207,17 @@ html, body, [class*="css"] {
     padding-right: 1.25rem;
 }
 .sidebar-brand-name {
-    font-size: 1.25rem;
+    font-size: 1.2rem;
     font-weight: 700;
     color: #f4f5f7;
     letter-spacing: -0.01em;
     margin: 0;
 }
 .sidebar-product-label {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     color: #f97316;
     font-weight: 600;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     margin-top: 0.1rem;
     margin-bottom: 1rem;
@@ -300,8 +229,8 @@ html, body, [class*="css"] {
     margin: 1rem 0;
 }
 .sidebar-about {
-    font-size: 0.875rem;
-    line-height: 1.65;
+    font-size: 0.87rem;
+    line-height: 1.6;
     color: #94a3b8;
     margin-bottom: 1rem;
 }
@@ -353,45 +282,26 @@ def get_client() -> genai.Client:
     return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
-def render_bubble(role: str, text: str, index: int) -> None:
-    """Render one completed message as a custom-styled bubble row.
-
-    role is "user" or "bot". index only needs to be unique within this
-    script run (it seeds the container keys) — it doesn't need to stay
-    stable across reruns, since bubbles hold no widget state of their own
-    and are rebuilt fresh from history every run.
-    """
-    if role == "user":
-        with st.container(key=f"row_u{index}", horizontal_alignment="right"):
-            with st.container(key=f"bub_u{index}", width="content"):
-                st.markdown(text)
-    else:
-        with st.container(
-            key=f"row_b{index}", horizontal=True, horizontal_alignment="left",
-            gap="small", vertical_alignment="top",
-        ):
-            with st.container(key=f"avatar_b{index}", width="content"):
-                st.markdown(":material/smart_toy:")
-            with st.container(key=f"bub_b{index}", width="content"):
-                st.markdown(text)
-
-
 def render_history() -> None:
-    """Replay stored turns as bubbles.
+    """Replay stored turns as native chat messages.
 
     History is kept in the Gemini format that build_messages()/stream_reply()
-    expect (role "user"/"model", parts→text), so "model" maps to "bot" here.
+    expect (role "user"/"model", parts→text), so "model" maps to "assistant".
     """
-    for i, turn in enumerate(st.session_state.history):
-        role = "user" if turn["role"] == "user" else "bot"
-        render_bubble(role, turn["parts"][0]["text"], i)
+    for turn in st.session_state.history:
+        if turn["role"] == "user":
+            with st.chat_message("user", avatar=USER_AVATAR):
+                st.markdown(turn["parts"][0]["text"])
+        else:
+            with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+                st.markdown(turn["parts"][0]["text"])
 
 
 def render_empty_state() -> None:
     """Centered hero + example-question cards, shown before the first message."""
     st.html(
         '<div class="hero-wrap">'
-        '<span class="hero-wordmark">Nexus Analytics</span>'
+        f'<span class="hero-wordmark">{COMPANY_NAME}</span>'
         '<h1 class="hero-title">Customer Support Portal</h1>'
         '<p class="hero-subtitle">Get precise answers about your account, billing, '
         "and dashboards — 24 / 7. Select a category below or type your inquiry directly.</p>"
@@ -399,12 +309,10 @@ def render_empty_state() -> None:
     )
     st.html('<div class="suggest-section-label">Common Inquiries</div>')
     col_a, col_b = st.columns(2, gap="small")
-    for i, (icon, label) in enumerate(EXAMPLE_QUESTIONS):
+    for i, label in enumerate(EXAMPLE_QUESTIONS):
         col = col_a if i % 2 == 0 else col_b
         with col:
-            if st.button(
-                f"{label}", key=f"suggest_card_{i}", use_container_width=True,
-            ):
+            if st.button(label, key=f"suggest_card_{i}", use_container_width=True):
                 st.session_state.pending_prompt = label
                 st.rerun()
 
@@ -414,13 +322,13 @@ def render_sidebar() -> None:
     with st.sidebar:
         st.html(
             f'<p class="sidebar-brand-name">{ASSISTANT_NAME}</p>'
-            '<span class="sidebar-product-label">Nexus Analytics Support</span>'
+            f'<span class="sidebar-product-label">{COMPANY_NAME} Support</span>'
         )
         st.html('<hr class="sidebar-divider">')
         st.markdown(
             f'<p class="sidebar-about">'
             f"I'm <strong>{ASSISTANT_NAME}</strong>, an automated support specialist for "
-            "<strong>Nexus Analytics</strong>. I handle account, billing, and dashboard "
+            f"<strong>{COMPANY_NAME}</strong>. I handle account, billing, and dashboard "
             "inquiries and stream replies in real time via <strong>Google Gemini</strong>."
             "</p>",
             unsafe_allow_html=True,
@@ -437,7 +345,7 @@ def render_sidebar() -> None:
 
 
 st.set_page_config(
-    page_title="Nexus Analytics | Support",
+    page_title=f"{COMPANY_NAME} | Support",
     page_icon=None,
     layout="centered",
 )
@@ -475,47 +383,41 @@ if not st.session_state.history and not prompt:
 render_history()
 
 if prompt:
-    render_bubble("user", prompt, index=len(st.session_state.history))
+    with st.chat_message("user", avatar=USER_AVATAR):
+        st.markdown(prompt)
 
     # Reuse main.py's builder to assemble the payload for this turn.
     messages = build_messages(st.session_state.history, prompt)
 
-    with st.container(
-        key="row_b_live", horizontal=True, horizontal_alignment="left",
-        gap="small", vertical_alignment="top",
-    ):
-        with st.container(key="avatar_b_live", width="content"):
-            st.markdown(":material/smart_toy:")
-        with st.container(key="bub_b_live", width="content"):
-            # Show a placeholder the instant the bubble appears, so it's
-            # never empty while stream_reply() is retrying models behind
-            # the scenes.
-            placeholder = st.empty()
-            placeholder.markdown(
-                f'<span class="thinking-label">{ASSISTANT_NAME} is '
-                f'thinking</span><span class="dot-flashing"></span>',
-                unsafe_allow_html=True,
-            )
-            reply = ""
-            try:
-                stream = stream_reply(client, messages)
-                first_chunk = next(stream, None)
-                if first_chunk is not None:
-                    # Real text has arrived — swap the placeholder for the
-                    # live stream, re-attaching the chunk already pulled off.
-                    placeholder.empty()
-
-                    def _resume():
-                        yield first_chunk
-                        yield from stream
-
-                    result = st.write_stream(_resume())
-                    reply = result.strip() if isinstance(result, str) else ""
-            except Exception:
-                reply = ""
-            if not reply:
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        # Show a placeholder the instant the bubble appears, so it's
+        # never empty while stream_reply() is retrying models behind
+        # the scenes.
+        placeholder = st.empty()
+        placeholder.markdown(
+            f'<span class="thinking-label">{ASSISTANT_NAME} is thinking…</span>',
+            unsafe_allow_html=True,
+        )
+        reply = ""
+        try:
+            stream = stream_reply(client, messages)
+            first_chunk = next(stream, None)
+            if first_chunk is not None:
+                # Real text has arrived — swap the placeholder for the
+                # live stream, re-attaching the chunk already pulled off.
                 placeholder.empty()
-                st.error("Sorry — I couldn't get a response just now. Please try again.")
+
+                def _resume():
+                    yield first_chunk
+                    yield from stream
+
+                result = st.write_stream(_resume())
+                reply = result.strip() if isinstance(result, str) else ""
+        except Exception:
+            reply = ""
+        if not reply:
+            placeholder.empty()
+            st.error("Sorry — I couldn't get a response just now. Please try again.")
 
     # Only remember successful exchanges, then trim with main.py's helper.
     if reply:
